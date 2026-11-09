@@ -33,11 +33,44 @@ const sampleSources = [
 });
 
 test("maps returned src, type, and size into application stream fields", () => {
-  assert.deepEqual(mapPlayerSources(sampleSources), [
+  assert.deepEqual(mapPlayerSources(sampleSources, referer), [
     {
       url: sampleSources[0].src,
       type: "application/x-mpegURL",
       quality: "720p",
+    },
+  ]);
+});
+
+test("resolves relative and absolute sources against the video detail URL", () => {
+  const streams = mapPlayerSources(
+    [
+      { src: "streams/clip-720.mp4", type: "video/mp4", size: 720 },
+      { src: "/playback/clip-1080.mp4", type: "video/mp4", size: 1080 },
+      {
+        src: "https://media.example.test/clip-2160.mp4",
+        type: "video/mp4",
+        size: 2160,
+      },
+    ],
+    referer
+  );
+
+  assert.deepEqual(streams, [
+    {
+      url: "https://javtiful.com/video/42/streams/clip-720.mp4",
+      type: "video/mp4",
+      quality: "720p",
+    },
+    {
+      url: "https://javtiful.com/playback/clip-1080.mp4",
+      type: "video/mp4",
+      quality: "1080p",
+    },
+    {
+      url: "https://media.example.test/clip-2160.mp4",
+      type: "video/mp4",
+      quality: "2160p",
     },
   ]);
 });

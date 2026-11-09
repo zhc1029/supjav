@@ -713,18 +713,32 @@ export function parseWatchConfig($: cheerio.CheerioAPI): Record<string, unknown>
   );
 }
 
-export function mapPlayerSources(sources: unknown): VideoStream[] {
+export function mapPlayerSources(
+  sources: unknown,
+  videoPageUrl: string
+): VideoStream[] {
   if (!Array.isArray(sources)) return [];
 
   const mapped: VideoStream[] = [];
   for (const candidate of sources) {
     if (!isRecord(candidate)) continue;
-    const url = typeof candidate.src === "string" ? candidate.src.trim() : "";
-    if (!url) continue;
+    const rawUrl = typeof candidate.src === "string" ? candidate.src.trim() : "";
+    if (!rawUrl) continue;
+
+    let absoluteUrl: string;
+    try {
+      const parsedUrl = new URL(rawUrl, videoPageUrl);
+      if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+        continue;
+      }
+      absoluteUrl = parsedUrl.toString();
+    } catch {
+      continue;
+    }
 
     const size = Number(candidate.size);
     mapped.push({
-      url,
+      url: absoluteUrl,
       type:
         typeof candidate.type === "string" && candidate.type
           ? candidate.type
@@ -814,7 +828,7 @@ export async function resolvePlaybackStreams(
   if (response.status < 200 || response.status >= 300 || !payload.success) {
     return [];
   }
-  return mapPlayerSources(payload.sources);
+  return mapPlayerSources(payload.sources, videoPageUrl);
 }
 
 // ============================================================
@@ -854,7 +868,7 @@ export async function getVideoDetail(
 
   const config = parseWatchConfig($);
   const videoPageUrl = new URL(url, BASE_URL).toString();
-  let streams = mapPlayerSources(config.playerSources);
+  let streams = mapPlayerSources(config.playerSources, videoPageUrl);
   if (streams.length === 0 && isRecord(config.playback)) {
     streams = await resolvePlaybackStreams(config.playback, videoPageUrl);
   }
