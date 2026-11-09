@@ -684,6 +684,139 @@ export async function search(
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function parseWatchConfig($: cheerio.CheerioAPI): Record<string, unknown> {
+  const candidates: Record<string, unknown>[] = [];
+  const addCandidate = (content: string | undefined) => {
+    if (!content) return;
+    try {
+      const parsed: unknown = JSON.parse(content);
+      if (isRecord(parsed)) candidates.push(parsed);
+    } catch {
+      // Ignore unrelated or invalid JSON scripts.
+    }
+  };
+
+  addCandidate($("#frontWatchConfig").html() || undefined);
+  $('script[type="application/json"]').each((_i, el) => {
+    addCandidate($(el).html() || undefined);
+  });
+
+  return (
+    candidates.find((candidate) => isRecord(candidate.playback)) ||
+    candidates.find((candidate) => Array.isArray(candidate.playerSources)) ||
+    candidates.find((candidate) => typeof candidate.videoTitle === "string") ||
+    {}
+  );
+}
+
+export function mapPlayerSources(sources: unknown): VideoStream[] {
+  if (!Array.isArray(sources)) return [];
+
+  const mapped: VideoStream[] = [];
+  for (const candidate of sources) {
+    if (!isRecord(candidate)) continue;
+    const url = typeof candidate.src === "string" ? candidate.src.trim() : "";
+    if (!url) continue;
+
+    const size = Number(candidate.size);
+    mapped.push({
+      url,
+      type:
+        typeof candidate.type === "string" && candidate.type
+          ? candidate.type
+          : null,
+      quality: Number.isFinite(size) && size > 0 ? `${size}p` : null,
+    });
+  }
+  return mapped;
+}
+
+type PlaybackResponse = { status: number; data: unknown };
+export type PlaybackRequester = (
+  endpoint: string,
+  ticket: string,
+  referer: string
+) => Promise<PlaybackResponse>;
+
+async function postPlaybackRequest(
+  endpoint: string,
+  ticket: string,
+  referer: string
+): Promise<PlaybackResponse> {
+  try {
+    const response = await client.post(
+      endpoint,
+      `ticket=${encodeURIComponent(ticket)}`,
+      {
+        timeout: 20000,
+        validateStatus: () => true,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "X-Requested-With": "XMLHttpRequest",
+          Origin: new URL(BASE_URL).origin,
+          Referer: referer,
+        },
+      }
+    );
+    return { status: response.status, data: response.data };
+  } catch {
+    // Keep request details out of logs; they can contain the playback ticket.
+    return { status: 0, data: null };
+  }
+}
+
+export async function resolvePlaybackStreams(
+  playbackValue: unknown,
+  videoPageUrl: string,
+  requester: PlaybackRequester = postPlaybackRequest
+): Promise<VideoStream[]> {
+  if (!isRecord(playbackValue)) return [];
+
+  const endpoint =
+    typeof playbackValue.endpoint === "string" ? playbackValue.endpoint : "";
+  const initialTicket =
+    typeof playbackValue.ticket === "string" ? playbackValue.ticket : "";
+  if (!endpoint || !initialTicket) return [];
+
+  let playbackUrl: string;
+  try {
+    const parsedUrl = new URL(endpoint, BASE_URL);
+    if (parsedUrl.origin !== new URL(BASE_URL).origin) return [];
+    playbackUrl = parsedUrl.toString();
+  } catch {
+    return [];
+  }
+
+  const request = async (ticket: string): Promise<PlaybackResponse> => {
+    try {
+      return await requester(playbackUrl, ticket, videoPageUrl);
+    } catch {
+      return { status: 0, data: null };
+    }
+  };
+
+  let response = await request(initialTicket);
+  let payload = isRecord(response.data) ? response.data : {};
+  if (
+    response.status === 409 &&
+    typeof payload.renewTicket === "string" &&
+    payload.renewTicket
+  ) {
+    response = await request(payload.renewTicket);
+    payload = isRecord(response.data) ? response.data : {};
+  }
+
+  if (response.status < 200 || response.status >= 300 || !payload.success) {
+    return [];
+  }
+  return mapPlayerSources(payload.sources);
+}
+
 // ============================================================
 // VIDEO DETAIL: Full video info including stream URLs
 // ============================================================
@@ -719,35 +852,12 @@ export async function getVideoDetail(
   const { data } = await client.get(url);
   const $ = cheerio.load(data);
 
-  // Extract the frontWatchConfig JSON blob
-  const configScript = $("#frontWatchConfig").html();
-  let config: Record<string, unknown> = {};
-  if (configScript) {
-    try {
-      config = JSON.parse(configScript);
-    } catch (_e) {
-      const allScripts = $('script[type="application/json"]');
-      allScripts.each((_, el) => {
-        try {
-          const parsed = JSON.parse($(el).html() || "{}");
-          if (parsed.playerSources || parsed.videoTitle) {
-            config = parsed;
-            return false;
-          }
-        } catch (_ex) {
-          // ignore
-        }
-      });
-    }
+  const config = parseWatchConfig($);
+  const videoPageUrl = new URL(url, BASE_URL).toString();
+  let streams = mapPlayerSources(config.playerSources);
+  if (streams.length === 0 && isRecord(config.playback)) {
+    streams = await resolvePlaybackStreams(config.playback, videoPageUrl);
   }
-
-  // Parse stream sources
-  const playerSources = (config.playerSources as Array<Record<string, unknown>>) || [];
-  const streams: VideoStream[] = playerSources.map((source) => ({
-    url: (source.src as string) || null,
-    type: (source.type as string) || null,
-    quality: source.size ? `${source.size}p` : null,
-  }));
 
   // Extract metadata
   const metaDescription = $('meta[name="description"]').attr("content") || "";
