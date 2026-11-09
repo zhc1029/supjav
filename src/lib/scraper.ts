@@ -96,12 +96,14 @@ export interface ChannelItem {
 function parseVideoCards($: cheerio.CheerioAPI): VideoResult[] {
   const videos: VideoResult[] = [];
 
-  // Find all video cards - they use <article class="front-video-card">
-  $(".front-video-card").each((_i, el) => {
+  // Support the current listing markup and the previous card class.
+  $(".video-card, .front-video-card").each((_i, el) => {
     const card = $(el);
 
-    // Title: specifically the .front-video-title link inside the card body
-    const titleEl = card.find(".front-video-card-body .front-video-title").first();
+    // Title links use .video-card__title in the current markup.
+    const titleEl = card
+      .find(".video-card__title, .front-video-card-body .front-video-title")
+      .first();
     const href = titleEl.attr("href") || "";
     const title = titleEl.text().trim();
 
@@ -183,7 +185,7 @@ function parseVideoCards($: cheerio.CheerioAPI): VideoResult[] {
 
   // Fallback: broader matching
   if (videos.length === 0) {
-    $(".front-video-title").each((i, el) => {
+    $(".video-card__title, .front-video-title").each((i, el) => {
       if (i >= 50) return false;
       const href = $(el).attr("href") || "";
       const text = $(el).text().trim();
